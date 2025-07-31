@@ -5,12 +5,33 @@ import json
 
 app = Flask(__name__)
 
-# Route to serve the main HTML file
 @app.route('/')
 def index():
     return send_from_directory('.', 'index.html')
 
-# Route to act as a proxy for the Docker Model Runner
+# Health check endpoint to test Ollama connection
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    api_endpoints = [
+        'http://localhost:11434/api/tags'  # Ollama models endpoint
+    ]
+    
+    status = {}
+    for endpoint in api_endpoints:
+        try:
+            response = requests.get(endpoint, timeout=5)
+            if response.status_code == 200:
+                status[endpoint] = "Available"
+                models = response.json().get('models', [])
+                status['available_models'] = [model.get('name', 'unknown') for model in models]
+            else:
+                status[endpoint] = f"Error: {response.status_code}"
+        except requests.exceptions.RequestException as e:
+            status[endpoint] = f"Connection failed: {str(e)}"
+    
+    return jsonify({"api_status": status})
+
+# Route to act as a proxy for the Ollama API
 @app.route('/api/chat', methods=['POST'])
 def proxy_chat():
     data = request.get_json()
@@ -19,27 +40,43 @@ def proxy_chat():
     if not prompt:
         return jsonify({"error": "Prompt is missing"}), 400
 
-    # --- THIS IS THE CORRECTED URL ---
-    # The Docker Model Runner API requires specifying the engine in the path.
-    docker_api_url = 'http://localhost:12434/engines/llama.cpp/v1/chat/completions'
+    # Ollama API endpoint for DeepSeek R1
+    api_endpoints = [
+        'http://localhost:11434/api/generate',  # Ollama API endpoint
+    ]
     
+    # Use DeepSeek R1 model
     payload = {
-        "model": "ai/deepseek-r1-distill-llama",
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+        "model": "deepseek-r1",
+        "prompt": prompt,
+        "stream": False
     }
 
     try:
-        print(f"\nSending POST request to the correct URL: {docker_api_url}")
-        response = requests.post(docker_api_url, json=payload)
-        response.raise_for_status()  # This will raise an error for 4xx or 5xx responses
+        # Try the Ollama API endpoint
+        api_url = api_endpoints[0]
+        print(f"\nTrying Ollama API endpoint: {api_url}")
+        response = requests.post(api_url, json=payload, timeout=60)
         
-        print("Successfully received response from model!")
-        return jsonify(response.json())
+        if response.status_code == 200:
+            print("Successfully received response from DeepSeek R1!")
+            ollama_response = response.json()
+            
+            # Convert Ollama response format to match frontend expectations
+            chat_response = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": ollama_response.get("response", "No response generated")
+                        },
+                        "finish_reason": "stop"
+                    }
+                ],
+                "model": "deepseek-r1"
+            }
+            return jsonify(chat_response)
+        else:
+            response.raise_for_status()
 
     except requests.exceptions.RequestException as e:
         print(f"Error connecting to Docker Model Runner: {e}")
@@ -59,6 +96,8 @@ def proxy_chat():
 
 # Main entry point to run the app
 if __name__ == '__main__':
-    print("Starting Flask server with corrected API URL...")
-    print("Open your browser and go to http://127.0.0.1:5000")
-    app.run(port=5000, debug=True)
+    print("Starting Flask server with DeepSeek R1...")
+    print("Local access: http://127.0.0.1:5001")
+    print("Network access: http://0.0.0.0:5001")
+    print("Other devices can connect using your IP address on port 5001")
+    app.run(host='0.0.0.0', port=5001, debug=True)
